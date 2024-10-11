@@ -9,14 +9,21 @@ const App: React.FC = () => {
     const [uploadProgress, setUploadProgress] = useState<number[]>([]);
     const [retryCounts, setRetryCounts] = useState<number[]>([]); // State for tracking retries
 
-    const backendUrl = "https://your-backend-server/upload"; // Replace with your actual backend endpoint
+    const backendUrl = "http://localhost:8080/api/v1/file"; // Replace with your actual backend endpoint
 
-    const uploadChunk = async (chunk: Blob, filename: string, chunkIndex: number, totalChunks: number, retries: number = 3): Promise<number> => {
+    const uploadChunk = async (chunk: Blob, originalFilename: string, chunkIndex: number, totalChunks: number, retries: number = 3): Promise<number> => {
         const formData = new FormData();
-        formData.append("file", chunk);
-        formData.append("filename", filename);
+
+        // Create a chunk-specific filename (e.g., filename_part_001)
+        const chunkedFilename = `${originalFilename}_part_${String(chunkIndex + 1).padStart(3, "0")}`;
+
+        formData.append("file", chunk, `${originalFilename}_part_${String(chunkIndex + 1).padStart(3, "0")}`);
+        formData.append("filename", chunkedFilename);
+        formData.append("originalFilename", originalFilename); // Send original filename to help backend with reassembly
         formData.append("chunkIndex", chunkIndex.toString());
         formData.append("totalChunks", totalChunks.toString());
+
+        console.log(`Uploading ${chunkedFilename} to ${backendUrl}`);
 
         try {
             await axios.post(backendUrl, formData, {
@@ -26,7 +33,7 @@ const App: React.FC = () => {
             });
             return 0; // Return 0 on success
         } catch (error) {
-            console.error(`Error uploading chunk ${chunkIndex} of ${filename}:`, error);
+            console.error(`Error uploading chunk ${chunkIndex} of ${originalFilename}:`, error);
             return retries - 1; // Return remaining retries
         }
     };
@@ -41,7 +48,7 @@ const App: React.FC = () => {
 
         if (files.length > 0) {
             files.forEach((file, fileIndex) => {
-                const chunkSize = 1024 * 1024 * 5; // 5MB per chunk
+                const chunkSize = 1024 * 1024; // 5MB per chunk
                 const totalChunks = Math.ceil(file.size / chunkSize);
 
                 for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
