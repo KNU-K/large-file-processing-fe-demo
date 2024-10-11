@@ -1,11 +1,35 @@
 import React, { useState } from "react";
 import { FaFileUpload, FaCheckCircle, FaSpinner } from "react-icons/fa";
+import axios from "axios";
 import logo from "./logo.svg";
 
 const App: React.FC = () => {
-    const [droppedItems, setDroppedItems] = useState<string[]>([]);
+    const [droppedItems, setDroppedItems] = useState<File[]>([]);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState<number[]>([]);
+    const [retryCounts, setRetryCounts] = useState<number[]>([]); // State for tracking retries
+
+    const backendUrl = "https://your-backend-server/upload"; // Replace with your actual backend endpoint
+
+    const uploadChunk = async (chunk: Blob, filename: string, chunkIndex: number, totalChunks: number, retries: number = 3): Promise<number> => {
+        const formData = new FormData();
+        formData.append("file", chunk);
+        formData.append("filename", filename);
+        formData.append("chunkIndex", chunkIndex.toString());
+        formData.append("totalChunks", totalChunks.toString());
+
+        try {
+            await axios.post(backendUrl, formData, {
+                headers: {
+                    "Content-Type": "multipart/form-data",
+                },
+            });
+            return 0; // Return 0 on success
+        } catch (error) {
+            console.error(`Error uploading chunk ${chunkIndex} of ${filename}:`, error);
+            return retries - 1; // Return remaining retries
+        }
+    };
 
     const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
         event.preventDefault();
@@ -13,34 +37,77 @@ const App: React.FC = () => {
 
         const files = Array.from(event.dataTransfer.files);
         const progressArray = new Array(files.length).fill(0);
+        const retriesArray = new Array(files.length).fill(5); // Initialize retry counts to 5
 
         if (files.length > 0) {
-            // Log file chunks to the console and simulate upload progress
             files.forEach((file, fileIndex) => {
-                console.log(`File: ${file.name}`);
-                const chunkSize = 1024 * 1024 * 5; // Example chunk size in bytes
+                const chunkSize = 1024 * 1024 * 5; // 5MB per chunk
                 const totalChunks = Math.ceil(file.size / chunkSize);
 
-                // Simulate chunk uploading and progress tracking
-                for (let i = 0; i < totalChunks; i++) {
-                    setTimeout(() => {
-                        const progressPercentage = Math.floor(((i + 1) / totalChunks) * 100);
-                        progressArray[fileIndex] = progressPercentage;
-                        setUploadProgress([...progressArray]);
+                for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                    const start = chunkIndex * chunkSize;
+                    const end = Math.min(file.size, start + chunkSize);
+                    const chunk = file.slice(start, end);
 
-                        if (progressPercentage === 100 && fileIndex === files.length - 1) {
-                            setIsUploading(false);
+                    // Upload each chunk and track progress
+                    uploadChunk(chunk, file.name, chunkIndex, totalChunks, retriesArray[fileIndex]).then((remainingRetries) => {
+                        if (remainingRetries === 0) {
+                            const progressPercentage = Math.floor(((chunkIndex + 1) / totalChunks) * 100);
+                            progressArray[fileIndex] = progressPercentage;
+                            setUploadProgress([...progressArray]);
+
+                            // Check if all files are fully uploaded
+                            if (progressPercentage === 100 && fileIndex === files.length - 1) {
+                                setIsUploading(false);
+                            }
+                        } else {
+                            // Update the retry count for the file
+                            retriesArray[fileIndex] = remainingRetries;
+                            setRetryCounts([...retriesArray]);
                         }
-                    }, i * 200); // Simulating delay between chunk uploads
+                    });
                 }
             });
 
-            setDroppedItems((prev) => [...prev, ...files.map((file) => file.name)]);
+            setDroppedItems((prev) => [...prev, ...files]);
         }
     };
 
     const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
         event.preventDefault();
+    };
+
+    const handleRetry = (fileIndex: number, chunkIndex: number) => {
+        const file = droppedItems[fileIndex];
+        const chunkSize = 1024 * 1024 * 5; // 5MB per chunk
+        const totalChunks = Math.ceil(file.size / chunkSize);
+        const start = chunkIndex * chunkSize;
+        const end = Math.min(file.size, start + chunkSize);
+        const chunk = file.slice(start, end);
+
+        // Retry uploading the chunk
+        uploadChunk(chunk, file.name, chunkIndex, totalChunks, retryCounts[fileIndex]).then((remainingRetries) => {
+            if (remainingRetries === 0) {
+                const progressPercentage = Math.floor(((chunkIndex + 1) / totalChunks) * 100);
+                setUploadProgress((prev) => {
+                    const newProgress = [...prev];
+                    newProgress[fileIndex] = progressPercentage;
+                    return newProgress;
+                });
+
+                // Check if all files are fully uploaded
+                if (progressPercentage === 100) {
+                    setIsUploading(false);
+                }
+            } else {
+                // Update the retry count for the file
+                setRetryCounts((prev) => {
+                    const newRetries = [...prev];
+                    newRetries[fileIndex] = remainingRetries;
+                    return newRetries;
+                });
+            }
+        });
     };
 
     return (
@@ -64,12 +131,20 @@ const App: React.FC = () => {
                     <p className="text-gray-400 italic">No files uploaded yet.</p>
                 ) : (
                     <ul className="list-disc list-inside w-full">
-                        {droppedItems.map((item, index) => (
-                            <li key={index} className="flex items-center justify-between p-2 rounded-lg transition-all duration-300 hover:bg-gray-100">
-                                <span className="font-medium text-gray-800">{item}</span>
+                        {droppedItems.map((item, fileIndex) => (
+                            <li key={fileIndex} className="flex items-center justify-between p-2 rounded-lg transition-all duration-300 hover:bg-gray-100">
+                                <span className="font-medium text-gray-800">{item.name}</span>
                                 <div className="flex items-center space-x-2">
-                                    {uploadProgress[index] === 100 ? <FaCheckCircle className="text-green-500" /> : <FaSpinner className="animate-spin text-blue-500" />}
-                                    <span className="text-gray-600">{uploadProgress[index] || 0}%</span>
+                                    {uploadProgress[fileIndex] === 100 ? <FaCheckCircle className="text-green-500" /> : <FaSpinner className="animate-spin text-blue-500" />}
+                                    <span className="text-gray-600">{uploadProgress[fileIndex] || 0}%</span>
+                                    {retryCounts[fileIndex] > 0 && uploadProgress[fileIndex] < 100 && (
+                                        <button
+                                            className="ml-2 text-blue-600 hover:underline"
+                                            onClick={() => handleRetry(fileIndex, Math.floor((uploadProgress[fileIndex] / 100) * Math.ceil(item.size / (1024 * 1024 * 5))))} // Calculate the chunk index based on progress
+                                        >
+                                            Retry
+                                        </button>
+                                    )}
                                 </div>
                             </li>
                         ))}
