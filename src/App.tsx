@@ -7,30 +7,48 @@ const App: React.FC = () => {
     const [droppedItems, setDroppedItems] = useState<File[]>([]);
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState<number[]>([]);
-    const [retryCounts, setRetryCounts] = useState<number[]>([]); // State for tracking retries
+    const [retryCounts, setRetryCounts] = useState<number[]>([]);
+    const [isChunkedUpload, setIsChunkedUpload] = useState(true); // State to toggle upload method
 
     const backendUrl = "http://localhost:8080/api/v1/file"; // Replace with your actual backend endpoint
 
-    const uploadChunk = async (chunk: Blob, originalFilename: string, chunkIndex: number, totalChunks: number, retries: number = 3): Promise<number> => {
+    const uploadFile = async (file: File) => {
         const formData = new FormData();
-
-        // Create a chunk-specific filename (e.g., filename_part_001)
-        const chunkedFilename = `${originalFilename}_part_${String(chunkIndex + 1).padStart(3, "0")}`;
-
-        formData.append("file", chunk, `${originalFilename}_part_${String(chunkIndex + 1).padStart(3, "0")}`);
-        formData.append("filename", chunkedFilename);
-        formData.append("originalFilename", originalFilename); // Send original filename to help backend with reassembly
-        formData.append("chunkIndex", chunkIndex.toString());
-        formData.append("totalChunks", totalChunks.toString());
-
-        console.log(`Uploading ${chunkedFilename} to ${backendUrl}`);
-
+        formData.append("file", file);
+        const startTime = performance.now(); // Start timing
         try {
             await axios.post(backendUrl, formData, {
                 headers: {
                     "Content-Type": "multipart/form-data",
                 },
             });
+            const endTime = performance.now(); // End timing
+            const duration = endTime - startTime; // Calculate duration
+            console.log(`File ${file.name} uploaded in ${duration.toFixed(2)} ms`);
+        } catch (error) {
+            console.error(`Error uploading file ${file.name}:`, error);
+        }
+    };
+
+    const uploadChunk = async (chunk: Blob, originalFilename: string, chunkIndex: number, totalChunks: number, retries: number = 3): Promise<number> => {
+        const formData = new FormData();
+        const chunkedFilename = `${originalFilename}_part_${String(chunkIndex + 1).padStart(3, "0")}`;
+        formData.append("file", chunk, chunkedFilename);
+        formData.append("originalFilename", originalFilename);
+        formData.append("chunkIndex", chunkIndex.toString());
+        formData.append("totalChunks", totalChunks.toString());
+        const startTime = performance.now(); // Start timing
+        try {
+            console.log(backendUrl + "/chunk");
+            await axios.post(backendUrl + "/chunk", formData, {
+                headers: {
+                    "Content-Type": "multipart/form-data",
+                },
+            });
+            const endTime = performance.now(); // End timing
+            const duration = endTime - startTime; // Calculate duration
+            console.log(`File ${chunkedFilename} uploaded in ${duration.toFixed(2)} ms`);
+
             return 0; // Return 0 on success
         } catch (error) {
             console.error(`Error uploading chunk ${chunkIndex} of ${originalFilename}:`, error);
@@ -38,45 +56,64 @@ const App: React.FC = () => {
         }
     };
 
-    const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
         event.preventDefault();
         setIsUploading(true);
-
         const files = Array.from(event.dataTransfer.files);
         const progressArray = new Array(files.length).fill(0);
-        const retriesArray = new Array(files.length).fill(5); // Initialize retry counts to 5
+        const retriesArray = new Array(files.length).fill(5);
 
         if (files.length > 0) {
-            files.forEach((file, fileIndex) => {
-                const chunkSize = 1024 * 1024; // 5MB per chunk
-                const totalChunks = Math.ceil(file.size / chunkSize);
-
-                for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-                    const start = chunkIndex * chunkSize;
-                    const end = Math.min(file.size, start + chunkSize);
-                    const chunk = file.slice(start, end);
-
-                    // Upload each chunk and track progress
-                    uploadChunk(chunk, file.name, chunkIndex, totalChunks, retriesArray[fileIndex]).then((remainingRetries) => {
-                        if (remainingRetries === 0) {
-                            const progressPercentage = Math.floor(((chunkIndex + 1) / totalChunks) * 100);
-                            progressArray[fileIndex] = progressPercentage;
-                            setUploadProgress([...progressArray]);
-
-                            // Check if all files are fully uploaded
-                            if (progressPercentage === 100 && fileIndex === files.length - 1) {
-                                setIsUploading(false);
-                            }
-                        } else {
-                            // Update the retry count for the file
-                            retriesArray[fileIndex] = remainingRetries;
-                            setRetryCounts([...retriesArray]);
-                        }
-                    });
-                }
-            });
-
             setDroppedItems((prev) => [...prev, ...files]);
+            for (const [fileIndex, file] of files.entries()) {
+                if (isChunkedUpload) {
+                    // Chunk-based upload
+                    const chunkSize = 1024 * 1024 * 5; // 5MB per chunk
+                    const totalChunks = Math.ceil(file.size / chunkSize);
+                    const uploadPromises = [];
+
+                    const fileStartTime = performance.now(); // Start time for the entire file upload
+
+                    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                        const start = chunkIndex * chunkSize;
+                        const end = Math.min(file.size, start + chunkSize);
+                        const chunk = file.slice(start, end);
+
+                        uploadPromises.push(
+                            uploadChunk(chunk, file.name, chunkIndex, totalChunks, retriesArray[fileIndex]).then((remainingRetries) => {
+                                if (remainingRetries === 0) {
+                                    const progressPercentage = Math.floor(((chunkIndex + 1) / totalChunks) * 100);
+                                    progressArray[fileIndex] = progressPercentage;
+                                    setUploadProgress([...progressArray]);
+
+                                    // Check if this is the last chunk and update the upload status
+                                    if (progressPercentage === 100 && fileIndex === files.length - 1) {
+                                        const fileEndTime = performance.now(); // End time for the entire file upload
+                                        const fileDuration = fileEndTime - fileStartTime; // Calculate total duration
+                                        console.log(`All chunks of ${file.name} uploaded in ${fileDuration.toFixed(2)} ms`);
+                                        setIsUploading(false);
+                                    }
+                                } else {
+                                    retriesArray[fileIndex] = remainingRetries;
+                                    setRetryCounts([...retriesArray]);
+                                }
+                            })
+                        );
+                    }
+                    // Wait for all chunks to finish uploading
+                    await Promise.all(uploadPromises);
+                } else {
+                    // Standard upload
+                    await uploadFile(file);
+                    const progressPercentage = 100; // Assume 100% for a full file upload
+                    progressArray[fileIndex] = progressPercentage;
+                    setUploadProgress([...progressArray]);
+
+                    if (progressPercentage === 100 && fileIndex === files.length - 1) {
+                        setIsUploading(false);
+                    }
+                }
+            }
         }
     };
 
@@ -92,7 +129,6 @@ const App: React.FC = () => {
         const end = Math.min(file.size, start + chunkSize);
         const chunk = file.slice(start, end);
 
-        // Retry uploading the chunk
         uploadChunk(chunk, file.name, chunkIndex, totalChunks, retryCounts[fileIndex]).then((remainingRetries) => {
             if (remainingRetries === 0) {
                 const progressPercentage = Math.floor(((chunkIndex + 1) / totalChunks) * 100);
@@ -102,12 +138,10 @@ const App: React.FC = () => {
                     return newProgress;
                 });
 
-                // Check if all files are fully uploaded
                 if (progressPercentage === 100) {
                     setIsUploading(false);
                 }
             } else {
-                // Update the retry count for the file
                 setRetryCounts((prev) => {
                     const newRetries = [...prev];
                     newRetries[fileIndex] = remainingRetries;
@@ -123,6 +157,13 @@ const App: React.FC = () => {
                 <img src={logo} className="App-logo w-24 h-24 transition-transform transform hover:rotate-12 duration-500" alt="logo" />
                 <p className="mt-2 text-xl font-semibold text-gray-800">Enhanced Drag & Drop</p>
             </header>
+
+            <div className="mb-4">
+                <label className="mr-2">
+                    <input type="checkbox" checked={isChunkedUpload} onChange={() => setIsChunkedUpload((prev) => !prev)} />
+                    Chunked Upload
+                </label>
+            </div>
 
             <div
                 className="flex flex-col items-center justify-center border-4 border-dashed border-gray-400 p-8 rounded-lg w-3/5 lg:w-1/2 bg-white shadow-lg transition-all duration-500 hover:shadow-xl hover:bg-gray-50"
@@ -142,23 +183,18 @@ const App: React.FC = () => {
                             <li key={fileIndex} className="flex items-center justify-between p-2 rounded-lg transition-all duration-300 hover:bg-gray-100">
                                 <span className="font-medium text-gray-800">{item.name}</span>
                                 <div className="flex items-center space-x-2">
-                                    {uploadProgress[fileIndex] === 100 ? <FaCheckCircle className="text-green-500" /> : <FaSpinner className="animate-spin text-blue-500" />}
-                                    <span className="text-gray-600">{uploadProgress[fileIndex] || 0}%</span>
-                                    {retryCounts[fileIndex] > 0 && uploadProgress[fileIndex] < 100 && (
-                                        <button
-                                            className="ml-2 text-blue-600 hover:underline"
-                                            onClick={() => handleRetry(fileIndex, Math.floor((uploadProgress[fileIndex] / 100) * Math.ceil(item.size / (1024 * 1024 * 5))))} // Calculate the chunk index based on progress
-                                        >
+                                    {uploadProgress[fileIndex] === 100 ? <FaCheckCircle className="text-green-500" /> : null}
+                                    {isUploading && uploadProgress[fileIndex] < 100 ? <FaSpinner className="animate-spin text-gray-500" /> : null}
+                                    {retryCounts[fileIndex] > 0 && uploadProgress[fileIndex] < 100 ? (
+                                        <button className="text-red-500 hover:underline" onClick={() => handleRetry(fileIndex, uploadProgress[fileIndex])}>
                                             Retry
                                         </button>
-                                    )}
+                                    ) : null}
                                 </div>
                             </li>
                         ))}
                     </ul>
                 )}
-
-                {isUploading && <p className="text-blue-500 mt-4">Uploading in progress...</p>}
             </div>
         </div>
     );
